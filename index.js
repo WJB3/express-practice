@@ -11,3 +11,6 @@ app.listen(port, () => {
     console.log(`Example app lisastening at http://localhost:${port}`)
 })
 
+module.exports =function(){
+    console.log('exports');
+}
