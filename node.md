@@ -208,7 +208,7 @@ exports.increment=function(val){
 
 ![哈哈](./public/images/moduleexports.png)
 
-## 6.Node引入模块的执行流程
+# 六.Node引入模块的执行流程
 
 <blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'>
 在Node中引入模块，需要经历如下3个步骤：<br /><br />
@@ -282,3 +282,322 @@ require()在分析标识符的过程中，会出现标识符中不包含文件�
 而如果main属性指定的文件名错误，或者压根没有package.json文件，Node会将index当作默认文件名，然后依次查找index.js、index.node、index.json。<br /><br />
 如果在目录分析的过程中没有定位成功任何文件，则自定义模块进入下一个模块路径进行查找。如果模块路径数组都被便利完毕，依然没有查到目标文件，则会抛出查找失败的异常。
 </blockquote>
+
+## 3.文件模块编译
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+在Node中，每个文件模块都是一个对象，它的定义如下：
+</blockquote>
+
+```js
+function Module(id,parent){
+    this.id=id;
+    this.exports={};
+    this.parent=parent;
+    if(parent && parent.children){
+        parent.children.push(this);
+    }
+    this.filename=null;
+    this.loaded=false;
+    this.children=[];
+}
+```
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+编译和执行是引入文件模块的最后一个阶段。定位到具体的文件后，Node会新建一个对象，然后根据路径载入并编译。对于不同的文件扩展名，其载入方法也有所不同，具体如下所示。<br /><br />
+1.  .js文件。通过fs模块同步读取文件后编译执行。<br />
+2   .node文件。这是用C/C++编写的扩展文件，通过dlopen()方法加载最后编译生成的文件。<br />
+3   .json文件。通过fs模块同步读取文件后，用JSON.parse()解析返回结果。<br />
+4.其余扩展名文件。它们都被当作.js文件载入。<br /><br />
+每一个编译成功的模块都会将其文件路径作为索引缓存在Module._cache对象上，以提高二次引入的性能。根据不同的文件扩展名，Node会调用不同的读取方式，如.json文件的调用如下：
+</blockquote>
+
+```js
+//Native extension for .json
+Module._extensions['.json']=function(module,filename){
+    var content=NativeModule.require('fs').readFileSync(filename,'utf8');
+    try{
+        module.exports=JSON.parse(stripBOM(content));
+    }catch(err){
+        err.message=filename+': '+err.message;
+        throw err;
+    }
+}
+```
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+其中，Module._extensions会被赋值给require()的extensions属性。
+</blockquote>
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+在确定文件的扩展名之后，Node将调用具体的编译方式将文件执行后返回给调用者。
+</blockquote>
+
+### 1.JS模块的编译
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+我们知道每个模块文件中存在着require、exports、module这三个变量，但是他们在模块文件中并没有定义，那么从何而来呢？甚至在Node的API文档中，我们知道每个模块还有_filename、_dirname这俩个变量的存在，他们又是从何而来的呢？如果我们把直接定义模块的过程放在浏览器端，会存在污染全局变量的情况。<br /><br />
+事实上，在编译的过程中，Node对获取的JS文件内容进行了头尾包装。在头部添加了(function(exports,require,module,__filenname,__dirname){\n},在尾部添加了\n});。一个正常的JS文件会被包装成如下的样子：
+</blockquote>
+
+```js
+(function(exports,require,module,__filename,__dirname){
+    var math=require('math');
+    exports.area=function(radius){
+        return Math.PI * radius * radius;
+    }
+});
+```
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+这样每个模块文件之间都进行了作用域隔离。包装之后的代码会通过vm原生模块的runInThisContext()方法执行（类似eval,只是具有明确上下文，不污染全局），返回一个具体的function对象。最后，将当前模块对象的exports属性、require()方法、module（模块对象自身），以及在文件定位中得到的完整文件路径和文件目录作为参数传递给这个function()执行。
+<br /><br />
+这就是这些变量并没有定义在每个模块文件却存在的原因。在执行之后，模块的exports属性返回给了调用方。exports属性上的任何方法和属性都可以被外部调用到，但是模块中其余变量或属性则不可直接被调用。
+</blockquote>
+
+### 2.C/C++模块的编译
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+Node调用process.dlopen()方法进行加载和执行。在Node的架构下，dlopen方法在WIN和*nix平台下分别有不同的实现，通过libuv兼容层进行了封装。<br /><br />
+实际上，.node的模块文件并不需要编译，因为他是编写C/C++模块之后编译生成的，所以这里只有加载和执行的过程。在执行的过程中，模块的exports对象与.node模块产生联系，然后返回给调用者。<br /><br />
+C/C++模块给Node使用者带来的优势主要是执行效率方面的，劣势则是C/C++模块的编写门槛比JS高。
+</blockquote>
+
+### 3.JSON文件的编译
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+.json文件的编译是3种编译方式中最为简单的。Node利用fs模块同步读取JSON文件的内容之后，调用JSON.parse()方法得到对象，然后将它赋给模块对象的exports,以供外部调用。<br />
+JSON文件再用作项目的配置文件时比较有用。如果你定义了一个JSON文件作为配置，那就不必调用fs模块去异步读取和解析，直接调用require()引入即可。此外，你还可以享受到模块缓存的便利，并且二次引入时也没有性能影响。<br /> 
+
+</blockquote>
+
+# 七、命令行输入node index.js究竟发生了什么？
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+本章中我们只将重点部分源码保留
+</blockquote>
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+当你输入node index.js时，系统会在当前目录下是否有名为node的可执行文件，如果没有找到，就在系统环境变量下寻找是否有node的环境变量，如果找到，就开始执行内部的入口文件。 
+</blockquote>
+
+## 1.可执行应用程序的入口文件
+ 
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+在前面章节中我们学到了win平台和mac平台下的可执行文件生成前都会使用gyp进行统一管理，<a href="https://gyp.gsrc.io/index.md">GYP</a>是一个元构建系统：生成其他构建系统的构建系统。我们打开node.gyp文件结构如下：
+</blockquote>
+
+```js
+{
+  'variables': { 
+    ...
+    'node_core_target_name%': 'node',
+  },     
+
+  'targets': [
+    ...
+    {
+      'target_name': '<(node_core_target_name)',
+      'type': 'executable',
+      'sources': [
+        'src/node_main.cc'
+      ],
+      ...... 
+    }              
+}
+
+```
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+1.variables  gyp顶级节点:定义变量，可以在文件的其他部分内插和使用.node_core_target_name就是定义的变量之一。<br />
+2.targets gyp顶级接待你:可以生成的目标列表。 其中每个目标都是一个字典，包含了描述构建目标所需的所有设置信息。<br />
+3.target_name targets的内部对象属性：目标名，在所有的.gyp文件中应该是唯一的。此名称将用于所成生的不同IDE的项目名，如：Visual Studio解决方案中的项目名称、Xcode配置中的目标名称、SCons配置的命令行构建此目标的别名。<br />
+4.type:'executable' executable目标默认情况下扩展名是.app，shared_library目标获取.framework，但如果需要，可以通过设置product_extension来更改包扩展名。mac_bundle_resources中列出的文件将被复制到捆绑包的Resource文件夹中。还可以在操作和规则中将process_outputs_as_mac_bundle_resources设置为1，以便将操作和规则的输出添加到该文件夹（类似process_outputs_as_sources）。如果没有设置product_name，通常会使用target_name命名。<br />
+5.sources 这个目标的源文件列表
+<br /><br />
+由上代码所示，我们可以得出node的执行入口文件示node_main.cc。
+</blockquote>
+
+## 2.Nodejs源码中所有的js文件编译方式
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+编译文件的第二个target是libnode，它是将其余剩余的C++文件编译成库文件，但是有一个特殊的地方就是该target在编译之前有个action：
+</blockquote>
+
+```js
+...
+'node_lib_target_name%': 'libnode',
+...
+{
+  // 这里定义的'node_lib_target_name'就是libnode
+  'target_name': '<(node_lib_target_name)',
+  'type': '<(node_intermediate_lib_type)',
+  'includes': [
+    'node.gypi',
+  ],
+
+  'include_dirs': [
+    'src',
+    '<(SHARED_INTERMEDIATE_DIR)' # for node_natives.h
+  ],
+  ... ...
+  'actions': [
+    {
+      'action_name': 'node_js2c',
+      'process_outputs_as_sources': 1,
+      'inputs': [
+        # Put the code first so it's a dependency and can be used for invocation.
+        'tools/js2c.py',
+        '<@(library_files)',
+        'config.gypi',
+        'tools/js2c_macros/check_macros.py'
+      ],
+      'outputs': [
+        '<(SHARED_INTERMEDIATE_DIR)/node_javascript.cc',
+      ],
+      'conditions': [
+        [ 'node_use_dtrace=="false" and node_use_etw=="false"', {
+          'inputs': [ 'tools/js2c_macros/notrace_macros.py' ]
+        }],
+        [ 'node_debug_lib=="false"', {
+          'inputs': [ 'tools/js2c_macros/nodcheck_macros.py' ]
+        }],
+        [ 'node_debug_lib=="true"', {
+          'inputs': [ 'tools/js2c_macros/dcheck_macros.py' ]
+        }]
+      ],
+      'action': [
+        'python', '<@(_inputs)',
+        '--target', '<@(_outputs)',
+      ],
+    },
+]
+```
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+从这个配置信息来看是说有个js2c.py的python文件会将lib/**/*.js和deps/**/*.js的所有js文件按照其ASCII码转化为一个个数组放到node_javascript.cc文件中。
+</blockquote>
+
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+生成的node_javascript.cc文件内容大致如下：
+</blockquote>
+
+```js
+namespace node {
+
+namespace native_module {
+  ...
+
+  static const uint8_t fs_raw[] = {...}
+
+  ...
+
+  void NativeModuleLoader::LoadJavaScriptSource() {
+    ...
+    source_.emplace("fs", UnionBytes{fs_raw, 50659});
+    ...
+  }
+  UnionBytes NativeModuleLoader::GetConfig() {
+    return UnionBytes(config_raw, 3017);  // config.gypi
+  }
+}
+```
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+这种做法直接就将js文件全都缓存到内存，避免了多余的I/O操作，提高了效率。因此从上述配置信息我们可以总结出这样一张编译过程：
+</blockquote>
+
+![哈哈](./public/images/ele.png)
+
+## 3.入口文件node_main.cc分析
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+C/C++前置知识：<br />
+1. int main() ：WINDOWS的控制台程序（32BIT）或DOS程序（16BIT），是C++主函数，程序从这里开始执行。<br />
+2. #if defined (x) ...code... #endif：这个#if defined它不管里面的“x”的逻辑是“真”还是“假”它只管这个程序的前面的宏定义里面有没有定义“x”这个宏，如果定义了x这个宏，那么，编译器会编译中间的…code…否则不直接忽视中间的…code…代码。另外 #if defined(x)也可以取反，也就用 #if !defined(x)。<br />
+3.#include" "：引用的是你程序目录的相对路径中的头文件，一般是用来引用自己写的一些头文件。<br />
+4.#include< >：引用的是编译器的类库路径里面的头文件。<br />
+5.#ifdef：#ifdef的使用和#if defined()的用法一致。<br />
+6.#define <宏名>　<字符串>：#define命令是C语言中的一个宏定义命令，它用来将一个标识符定义为一个字符串，该标识符被称为宏名，被定义的字符串称为替换文本。<br />
+7.main函数的行参：因为main函数是主函数，所以不能在程序中被调用，但是他是可以传参数的，参数值是从从操作系统命令行上获得的，第一个参数为命令行实际参数的数量，第二个参数则是由命令行实际参数组成的数组。<br />
+8.wmain函数：Windows API窗体程序入口函数。可以不用理会。
+</blockquote>
+
+```js 
+.....
+#endif
+  // Disable stdio buffering, it interacts poorly with printf()
+  // calls elsewhere in the program (e.g., any logging from V8.)
+  // 改为不缓冲
+  setvbuf(stdout, nullptr, _IONBF, 0);
+  setvbuf(stderr, nullptr, _IONBF, 0);
+  //相当于JS调用了node模块的Start方法一样，其中node是namespace定义并导入node.h头部文件
+  return node::Start(argc, argv);
+}
+#endif
+
+```
+
+
+<blockquote style='padding: 10px; font-size: 1em; margin: 1em 0px; color: rgb(0, 0, 0); border-left: 5px solid rgba(0,189,170,1); background: rgb(239, 235, 233);line-height:1.5;'> 
+由上代码中我们可以看出他在这里做了1件事：<br />
+ 1.stdout的默认缓冲行为为_IOLBF（行缓冲），但是对于这种来说交互性会非常的差，所以将其改为_IONBF（不缓冲）<br /><br />
+ 什么是行缓冲呢？行缓冲就是每遇到换行符把缓冲区内容送到指定位置，但是这种缓冲交互性不好，比如你打lol  你按下q 就要马上执行，这时候行缓冲就不合适。
+</blockquote>
+
+## 4.从node::Start开始看C++代码经过
+
+```js
+// src/node.cc
+int Start(int argc, char** argv) {
+  //进行初始化操作
+  InitializationResult result = InitializeOncePerProcess(argc, argv);
+   
+
+  { 
+    ......
+    NodeMainInstance main_instance(&params,
+                                   uv_default_loop(),
+                                   per_process::v8_platform.Platform(),
+                                   result.args,
+                                   result.exec_args,
+                                   indexes);
+    result.exit_code = main_instance.Run();
+    ......
+}
+//在Start方法中我们创建了一个MainInstance实例并且执行了其中的main方法
+============================================================================
+// src/NodeMainInstance.cc
+int NodeMainInstance::Run() {
+   ....
+  if (exit_code == 0) {
+    LoadEnvironment(env.get());
+  ....
+}
+//在Run方法中我们使用LoadEnvironment来初始化环境
+============================================================================
+// src/api/environment.cc
+MaybeLocal<Value> LoadEnvironment(
+    Environment* env,
+    StartExecutionCallback cb,
+    std::unique_ptr<InspectorParentHandle> removeme) {
+  env->InitializeLibuv();
+  env->InitializeDiagnostics();
+
+  return StartExecution(env, cb);
+}
+//可以看出我们最后执行了StartExecution方法
+============================================================================
+//src/api/node.cc
+MaybeLocal<Value> StartExecution(Environment* env, StartExecutionCallback cb) {
+  ...
+  if (!first_argv.empty() && first_argv != "-") {
+    return StartExecution(env, "internal/main/run_main_module");
+  }
+  ...
+}
+//可以看出我们最后执行了internal/main/run_main_module文件，而run_main_module文件就是第一个js入口文件。
+```
+ 
+
+
